@@ -1,0 +1,21 @@
+[package]
+name = "rusted-excel"
+version = "0.1.0"
+edition = "2021"
+description = "A tiny desktop spreadsheet: Rust GUI over a C/C++ calculation core"
+license = "MIT"
+repository = "https://github.com/hasaanamerravid-source/Rusted-Excel"
+keywords = ["spreadsheet", "excel", "fltk", "rust", "lightweight"]
+
+[dependencies]
+fltk = "1.5"
+
+[build-dependencies]
+cc = "1"
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"
