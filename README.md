@@ -10,10 +10,14 @@ handled by a tiny C helper. No browser engine, no JS runtime, no heavy toolkit.
 
 ## Features
 
-- Native desktop window (FLTK, drawn with X11 on Linux) with grid, headers,
-  name box and formula bar.
-- Keyboard-first editing: arrows, `Enter`/`F2` to edit, `Delete` to clear,
-  type to start editing, `Tab` to commit and move right.
+- Calc-style desktop layout: menu bar, toolbar, name box, formula bar,
+  scrollable grid with row/column headers, sheet tabs and a status bar
+  showing average/sum/count for the selected range.
+- Keyboard-first editing: arrows, `Enter`/`F2`/double-click to edit,
+  `Delete` to clear, type to start editing, `Tab` to commit and move right.
+- Toolbar actions: New/Open/Save, Cut/Copy/Paste, Undo/Redo, Σ (sum of cells
+  above), bold/italic and left/center/right alignment.
+- Multiple sheets via the tab bar and the `+` button.
 - Formulas evaluated by the C++ engine:
   `=A1+B2`, `=SUM(A1:A10)`, `=AVG(B1:B5)`, `=MIN(...)`, `=MAX(...)`,
   `=COUNT(...)`, `=ABS(...)`, `=ROUND(...)`, `=POW(...)`, `=SQRT(...)`,
