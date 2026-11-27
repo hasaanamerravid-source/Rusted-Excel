@@ -1,6 +1,6 @@
 [package]
 name = "rusted-excel"
-version = "0.2.0"
+version = "1.0.0"
 edition = "2021"
 description = "A tiny desktop spreadsheet: Rust GUI over a C/C++ calculation core"
 license = "MIT"

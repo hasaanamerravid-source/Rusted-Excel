@@ -1,8 +1,9 @@
 #![allow(dead_code)]
-//! Thin, safe-ish wrappers around the C ABI exposed by `native/rx_core.cpp`
+//! Thin safe wrappers around the C ABI exposed by `native/rx_core.cpp`
 //! and `native/rx_csv.c`.
 
-use std::ffi::{CStr, CString, c_char, c_int, c_void};
+use std::ffi::{c_char, c_int, c_void, CStr, CString};
+use std::panic::{catch_unwind, AssertUnwindSafe};
 
 #[repr(C)]
 pub struct RxSheet {
@@ -29,6 +30,15 @@ unsafe extern "C" {
         user: *mut c_void,
     ) -> c_int;
     fn rx_csv_escape(field: *const c_char, out: *mut c_char, out_len: usize) -> usize;
+}
+
+fn c_text(text: &str) -> CString {
+    match CString::new(text) {
+        Ok(value) => value,
+        // Preserve the visible text instead of silently storing an empty cell.
+        Err(_) => CString::new(text.replace('\0', "\u{fffd}"))
+            .expect("replacement text cannot contain an interior NUL"),
+    }
 }
 
 unsafe fn str_from(ptr: *const c_char) -> String {
@@ -59,7 +69,7 @@ impl Sheet {
     }
 
     pub fn set(&mut self, row: i32, col: i32, text: &str) {
-        let value = CString::new(text).unwrap_or_default();
+        let value = c_text(text);
         unsafe { rx_sheet_set(self.ptr, row, col, value.as_ptr()) }
     }
 
@@ -89,14 +99,7 @@ impl Sheet {
 
     pub fn name(row: i32, col: i32) -> String {
         let mut buf = [0u8; 32];
-        let len = unsafe {
-            rx_cell_name(
-                row,
-                col,
-                buf.as_mut_ptr().cast::<c_char>(),
-                buf.len(),
-            )
-        };
+        let len = unsafe { rx_cell_name(row, col, buf.as_mut_ptr().cast::<c_char>(), buf.len()) };
         String::from_utf8_lossy(&buf[..len.min(buf.len() - 1)]).into_owned()
     }
 
@@ -105,7 +108,11 @@ impl Sheet {
         let mut row = 0;
         let mut col = 0;
         let ok = unsafe { rx_cell_parse(text.as_ptr(), &mut row, &mut col) };
-        if ok == 0 { None } else { Some((row, col)) }
+        if ok == 0 {
+            None
+        } else {
+            Some((row, col))
+        }
     }
 }
 
@@ -113,6 +120,11 @@ impl Drop for Sheet {
     fn drop(&mut self) {
         unsafe { rx_sheet_free(self.ptr) }
     }
+}
+
+struct CsvContext<'a> {
+    sink: &'a mut dyn FnMut(i32, i32, &str),
+    failed: bool,
 }
 
 unsafe extern "C" fn csv_callback(
@@ -125,31 +137,39 @@ unsafe extern "C" fn csv_callback(
     if user.is_null() || text.is_null() {
         return;
     }
-    let sink = &mut *(user as *mut &mut dyn FnMut(i32, i32, &str));
+    let ctx = &mut *(user as *mut CsvContext<'_>);
     let bytes = std::slice::from_raw_parts(text.cast::<u8>(), len);
-    sink(row, col, &String::from_utf8_lossy(bytes));
+    let value = String::from_utf8_lossy(bytes);
+    // A panic must never unwind through the C parser into an extern "C" frame.
+    let result = catch_unwind(AssertUnwindSafe(|| (ctx.sink)(row, col, &value)));
+    if result.is_err() {
+        ctx.failed = true;
+    }
 }
 
 /// Parse CSV, calling `sink` once for every field (including empty ones).
 pub fn parse_csv(input: &str, mut sink: impl FnMut(i32, i32, &str)) -> Result<(), ()> {
     let text = CString::new(input).map_err(|_| ())?;
-    let mut sink_ref: &mut dyn FnMut(i32, i32, &str) = &mut sink;
-    let user = (&mut sink_ref as *mut &mut dyn FnMut(i32, i32, &str)).cast::<c_void>();
+    let mut ctx = CsvContext {
+        sink: &mut sink,
+        failed: false,
+    };
+    let user = (&mut ctx as *mut CsvContext<'_>).cast::<c_void>();
     let ok = unsafe { rx_csv_parse(text.as_ptr(), Some(csv_callback), user) };
-    if ok == 0 { Ok(()) } else { Err(()) }
+    if ok == 0 && !ctx.failed {
+        Ok(())
+    } else {
+        Err(())
+    }
 }
 
 /// Escape a single field for CSV output.
 pub fn csv_escape(field: &str) -> String {
-    let value = CString::new(field).unwrap_or_default();
+    let value = c_text(field);
     let needed = unsafe { rx_csv_escape(value.as_ptr(), std::ptr::null_mut(), 0) };
     let mut buf = vec![0u8; needed + 1];
     unsafe {
-        rx_csv_escape(
-            value.as_ptr(),
-            buf.as_mut_ptr().cast::<c_char>(),
-            buf.len(),
-        );
+        rx_csv_escape(value.as_ptr(), buf.as_mut_ptr().cast::<c_char>(), buf.len());
     }
     let end = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
     String::from_utf8_lossy(&buf[..end]).into_owned()

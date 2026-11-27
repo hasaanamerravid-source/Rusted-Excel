@@ -6,6 +6,10 @@
 #include <stdlib.h>
 #include <string.h>
 
+static int rx_is_delimiter(char ch) {
+    return ch == ',' || ch == '\n' || ch == '\r' || ch == '\0';
+}
+
 int rx_csv_parse(const char *input, rx_csv_cell_fn cb, void *user) {
     if (!input) return -1;
 
@@ -19,6 +23,8 @@ int rx_csv_parse(const char *input, rx_csv_cell_fn cb, void *user) {
     int in_quotes = 0;
     int at_field_start = 1;
     int after_quote = 0;
+    /* A field exists after a comma; a final newline does not start a new row. */
+    int pending_field = 1;
 
     for (size_t i = 0; i <= n; ++i) {
         const char ch = (i < n) ? input[i] : '\0';
@@ -30,7 +36,11 @@ int rx_csv_parse(const char *input, rx_csv_cell_fn cb, void *user) {
                     buf[len++] = '"'; /* escaped quote */
                     continue;
                 }
-                in_quotes = 0; /* fall through: delimiter expected */
+                if (!rx_is_delimiter(ch)) {
+                    free(buf);
+                    return -1; /* e.g. "a"b is malformed */
+                }
+                in_quotes = 0; /* fall through: delimiter or EOF */
             } else {
                 if (ch == '"') {
                     after_quote = 1;
@@ -47,26 +57,36 @@ int rx_csv_parse(const char *input, rx_csv_cell_fn cb, void *user) {
 
         if (at_field_start && ch == '"' && i < n) {
             in_quotes = 1;
+            after_quote = 0;
             at_field_start = 0;
             continue;
         }
 
-        if (ch == ',' || ch == '\n' || ch == '\r' || ch == '\0') {
+        if (ch == '\0') {
+            if (pending_field && cb) cb(user, row, col, buf, len);
+            break;
+        }
+
+        if (rx_is_delimiter(ch)) {
             if (cb) cb(user, row, col, buf, len);
             len = 0;
             at_field_start = 1;
-            ++col;
-            if (ch == '\n') {
+            if (ch == ',') {
+                ++col;
+                pending_field = 1; /* empty final field is valid */
+            } else { /* \n or \r */
                 ++row;
                 col = 0;
-            } else if (ch == '\r') {
-                if (i + 1 < n && input[i + 1] == '\n') ++i;
-                ++row;
-                col = 0;
+                pending_field = 0; /* a trailing newline is not a new row */
+                if (ch == '\r' && i + 1 < n && input[i + 1] == '\n') ++i;
             }
             continue;
         }
 
+        if (ch == '"') { /* bare quote inside an unquoted field */
+            free(buf);
+            return -1;
+        }
         buf[len++] = ch;
         at_field_start = 0;
     }

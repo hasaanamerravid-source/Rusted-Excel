@@ -1,12 +1,19 @@
 #!/usr/bin/env python3
-"""Regenerate assets/logo.png - a small, original spreadsheet-style mark.
+"""Regenerate the Rusted Excel logo and all packaged hicolor app icons.
 
 Uses only Pillow. No external image service or network access required.
+Output is deterministic and the transparent rounded-corner background is kept
+in every generated PNG.
 """
 from pathlib import Path
 from PIL import Image, ImageDraw, ImageFont
 
-OUT = Path(__file__).resolve().parent.parent / "assets" / "logo.png"
+ROOT = Path(__file__).resolve().parent.parent
+OUT = ROOT / "assets" / "logo.png"
+ICON_ROOT = ROOT / "packaging" / "icons" / "hicolor"
+ICON_SIZES = (16, 22, 24, 32, 48, 64, 128, 256)
+RESAMPLE = getattr(Image, "Resampling", Image).LANCZOS
+
 SIZE = 512
 GREEN_DARK = (16, 94, 44, 255)
 GREEN = (33, 147, 67, 255)
@@ -28,8 +35,8 @@ def gradient_square(size: int) -> Image.Image:
     return img
 
 
-def main() -> None:
-    OUT.parent.mkdir(parents=True, exist_ok=True)
+def build_logo() -> Image.Image:
+    """Draw the master 512x512 RGBA mark."""
     img = gradient_square(SIZE)
 
     mask = Image.new("L", (SIZE, SIZE), 0)
@@ -70,8 +77,23 @@ def main() -> None:
     d.text((tx + 3, ty + 3), text, font=font, fill=(8, 52, 22, 220))
     d.text((tx, ty), text, font=font, fill=WHITE)
 
+    return img
+
+
+def main() -> None:
+    img = build_logo()
+
+    OUT.parent.mkdir(parents=True, exist_ok=True)
     img.save(OUT, optimize=True)
     print(f"wrote {OUT} ({OUT.stat().st_size} bytes)")
+
+    for size in ICON_SIZES:
+        dest = ICON_ROOT / str(size) / "apps" / "rusted-excel.png"
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        # LANCZOS keeps the antialiasing and alpha channel when downscaling.
+        icon = img.resize((size, size), RESAMPLE)
+        icon.save(dest, optimize=True)
+        print(f"wrote {dest} ({size}x{size}, {dest.stat().st_size} bytes)")
 
 
 if __name__ == "__main__":

@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.hasaanamerravid.RustedExcel.desktop</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT</project_license>
+  <name>Rusted Excel</name>
+  <summary>A lightweight desktop spreadsheet for CSV files</summary>
+  <description>
+    <p>
+      Rusted Excel is a small, fast spreadsheet application for the desktop. A
+      Rust GUI drives a native C/C++ calculation core, with no browser engine,
+      JavaScript runtime or heavyweight toolkit.
+    </p>
+    <p>
+      It provides a familiar grid with menus, toolbar, formula bar, multiple
+      sheets and a status bar. You can edit with the keyboard, format cells,
+      and use formulas such as =SUM(A1:A10), =AVG(B1:B5) and =IF(A1&gt;0,1,0).
+      Documents are opened and saved as CSV, including quoted fields.
+    </p>
+  </description>
+  <launchable type="desktop-id">io.github.hasaanamerravid.RustedExcel.desktop</launchable>
+  <provides>
+    <binary>rusted-excel</binary>
+    <mediatype>text/csv</mediatype>
+  </provides>
+  <categories>
+    <category>Office</category>
+    <category>Spreadsheet</category>
+  </categories>
+  <developer id="io.github.hasaanamerravid">
+    <name>Hasaan Amer</name>
+  </developer>
+  <content_rating type="oars-1.1" />
+  <url type="homepage">https://github.com/hasaanamerravid-source/Rusted-Excel</url>
+  <url type="bugtracker">https://github.com/hasaanamerravid-source/Rusted-Excel/issues</url>
+  <releases>
+    <release version="1.0.0" date="2026-11-27">
+      <description>
+        <p>Initial 1.0.0 release of the desktop spreadsheet.</p>
+      </description>
+    </release>
+  </releases>
+</component>

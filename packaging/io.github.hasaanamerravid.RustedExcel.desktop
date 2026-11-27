@@ -1,0 +1,22 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=Rusted Excel
+GenericName=Spreadsheet
+Comment=A lightweight desktop spreadsheet
+Exec=rusted-excel %f
+TryExec=rusted-excel
+Icon=rusted-excel
+Terminal=false
+Categories=Office;Spreadsheet;
+MimeType=text/csv;
+Keywords=spreadsheet;csv;calc;
+X-Developer-ID=io.github.hasaanamerravid
+StartupNotify=true
+StartupWMClass=FLTK
+Actions=New;
+
+[Desktop Action New]
+Name=New Spreadsheet
+Icon=rusted-excel
+Exec=rusted-excel

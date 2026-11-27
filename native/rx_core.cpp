@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <climits>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -63,24 +64,62 @@ std::string format_number(double n) {
     return std::string(buf);
 }
 
-struct Sheet {
-    int rows;
-    int cols;
+struct Storage {
     std::vector<std::string> cells;
     std::vector<Value> values;
     std::vector<unsigned char> state; // 0 = new, 1 = evaluating, 2 = done
     std::vector<std::string> display;
     std::vector<unsigned char> display_valid;
+};
+
+Storage make_storage(int rows, int cols) {
+    const size_t n = static_cast<size_t>(rows) * static_cast<size_t>(cols);
+    Storage storage;
+    storage.cells.assign(n, std::string());
+    storage.values.assign(n, Value());
+    storage.state.assign(n, 0);
+    storage.display.assign(n, std::string());
+    storage.display_valid.assign(n, 0);
+    return storage;
+}
+
+struct Sheet {
+    int rows;
+    int cols;
+    std::vector<std::string> cells;
+    std::vector<Value> values;
+    std::vector<unsigned char> state;
+    std::vector<std::string> display;
+    std::vector<unsigned char> display_valid;
 
     Sheet(int r, int c) : rows(r), cols(c) { reset(); }
 
+    void install(Storage &fresh) {
+        cells.swap(fresh.cells);
+        values.swap(fresh.values);
+        state.swap(fresh.state);
+        display.swap(fresh.display);
+        display_valid.swap(fresh.display_valid);
+    }
+
     void reset() {
-        const size_t n = static_cast<size_t>(rows) * static_cast<size_t>(cols);
-        cells.assign(n, std::string());
-        values.assign(n, Value());
-        state.assign(n, 0);
-        display.assign(n, std::string());
-        display_valid.assign(n, 0);
+        Storage fresh = make_storage(rows, cols);
+        install(fresh);
+    }
+
+    void resized(int new_rows, int new_cols) {
+        Storage fresh = make_storage(new_rows, new_cols);
+        const int copy_rows = std::min(rows, new_rows);
+        const int copy_cols = std::min(cols, new_cols);
+        for (int r = 0; r < copy_rows; ++r) {
+            for (int c = 0; c < copy_cols; ++c) {
+                fresh.cells[static_cast<size_t>(r) * new_cols + c] =
+                    cells[static_cast<size_t>(r) * cols + c];
+            }
+        }
+        rows = new_rows;
+        cols = new_cols;
+        install(fresh);
     }
 
     int index(int r, int c) const { return r * cols + c; }
@@ -106,6 +145,9 @@ public:
 
     Value parse_all() {
         Value v = parse_compare();
+        if (is_error(v)) {
+            return v;
+        }
         skip();
         if (pos != src.size()) {
             return Value::err("#ERR!");
@@ -114,7 +156,7 @@ public:
     }
 
 private:
-    const std::string &src;
+    std::string src;
     Sheet &sheet;
     std::vector<unsigned char> &state;
     size_t pos = 0;
@@ -168,11 +210,29 @@ private:
 
     static bool is_error(const Value &v) { return v.kind == Value::Kind::Error; }
 
+    Value resolve(const Value &v) { return resolve_ref(v, sheet, state); }
+
+    bool has_error(const Value &v, Value &err) {
+        if (is_error(v)) {
+            err = v;
+            return true;
+        }
+        Value x = resolve_ref(v, sheet, state);
+        if (is_error(x)) {
+            err = x;
+            return true;
+        }
+        return false;
+    }
+
     double as_number(const Value &v) {
         if (is_error(v)) {
             return 0.0;
         }
         Value x = resolve_ref(v, sheet, state);
+        if (is_error(x)) {
+            return 0.0;
+        }
         if (x.kind == Value::Kind::Number) {
             return x.number;
         }
@@ -226,6 +286,8 @@ private:
             }
             Value a = resolve_ref(left, sheet, state);
             Value b = resolve_ref(right, sheet, state);
+            if (is_error(a)) return a;
+            if (is_error(b)) return b;
             int cmp = 0;
             if (a.kind == Value::Kind::Text || b.kind == Value::Kind::Text) {
                 std::string sa = as_text(a);
@@ -261,6 +323,10 @@ private:
             if (is_error(right)) {
                 return right;
             }
+            Value err;
+            if (has_error(left, err) || has_error(right, err)) {
+                return err;
+            }
             left = Value::str(as_text(left) + as_text(right));
         }
         return left;
@@ -272,16 +338,18 @@ private:
             return left;
         }
         for (;;) {
-            double dummy = 0.0;
             bool plus = eat('+');
             bool minus = !plus && eat('-');
             if (!plus && !minus) {
                 return left;
             }
-            (void)dummy;
             Value right = parse_muldiv();
             if (is_error(right)) {
                 return right;
+            }
+            Value err;
+            if (has_error(left, err) || has_error(right, err)) {
+                return err;
             }
             double a = as_number(left);
             double b = as_number(right);
@@ -290,7 +358,7 @@ private:
     }
 
     Value parse_muldiv() {
-        Value left = parse_power();
+        Value left = parse_unary();
         if (is_error(left)) {
             return left;
         }
@@ -300,9 +368,13 @@ private:
             if (!mul && !div) {
                 return left;
             }
-            Value right = parse_power();
+            Value right = parse_unary();
             if (is_error(right)) {
                 return right;
+            }
+            Value err;
+            if (has_error(left, err) || has_error(right, err)) {
+                return err;
             }
             double b = as_number(right);
             if (div && b == 0.0) {
@@ -314,14 +386,18 @@ private:
     }
 
     Value parse_power() {
-        Value left = parse_unary();
+        Value left = parse_primary();
         if (is_error(left)) {
             return left;
         }
         if (eat('^')) {
-            Value right = parse_power(); // right associative
+            Value right = parse_unary(); // right associative
             if (is_error(right)) {
                 return right;
+            }
+            Value err;
+            if (has_error(left, err) || has_error(right, err)) {
+                return err;
             }
             return Value::num(std::pow(as_number(left), as_number(right)));
         }
@@ -339,7 +415,7 @@ private:
             if (is_error(v)) return v;
             return Value::num(as_number(v));
         }
-        return parse_primary();
+        return parse_power();
     }
 
     // `A1:B3` is only meaningful as a function argument; parse_arg handles it.
@@ -378,7 +454,7 @@ private:
             if (ch == '$') ++pos;
             while (pos < src.size() &&
                    (std::isalnum(static_cast<unsigned char>(src[pos])) ||
-                    src[pos] == '$' || src[pos] == '_' || src[pos] == '.')) {
+                    src[pos] == '$' || src[pos] == '_')) {
                 ++pos;
             }
             std::string word = src.substr(start, pos - start);
@@ -386,26 +462,45 @@ private:
             if (pos < src.size() && src[pos] == '(') {
                 return parse_function(word);
             }
-            // A1-style reference?
+
             std::string cleaned;
             for (char c : word) {
                 if (c != '$') cleaned += c;
             }
+            std::string upper;
+            for (char c : cleaned) {
+                upper += static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+            }
+            if (upper == "TRUE" || upper == "FALSE") {
+                return Value::num(upper == "TRUE" ? 1.0 : 0.0);
+            }
+
             std::string letters;
             std::string digits;
             bool seen_digit = false;
+            bool valid = !cleaned.empty();
             for (char c : cleaned) {
-                if (std::isdigit(static_cast<unsigned char>(c))) seen_digit = true;
-                if (seen_digit) digits += c;
-                else letters += static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+                if (std::isdigit(static_cast<unsigned char>(c))) {
+                    seen_digit = true;
+                    digits += c;
+                } else if (std::isalpha(static_cast<unsigned char>(c)) && !seen_digit) {
+                    letters += static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+                } else {
+                    valid = false;
+                }
             }
-            if (!letters.empty() && !digits.empty() && isdigit(digits[0])) {
-                int col = 0;
+            if (valid && !letters.empty() && !digits.empty()) {
+                long long col = 0;
                 for (char c : letters) {
                     col = col * 26 + (c - 'A' + 1);
+                    if (col > INT_MAX) return Value::err("#REF!");
                 }
-                int row = std::atoi(digits.c_str()) - 1;
-                return Value::ref(row, col - 1);
+                long long row = 0;
+                for (char c : digits) {
+                    row = row * 10 + (c - '0');
+                    if (row > INT_MAX) return Value::err("#REF!");
+                }
+                return Value::ref(static_cast<int>(row) - 1, static_cast<int>(col) - 1);
             }
             return Value::err("#NAME?");
         }
@@ -472,6 +567,7 @@ private:
             double min_v = 0.0, max_v = 0.0;
             for (const Value &v : args) {
                 Value x = resolve_ref(v, sheet, state);
+                if (is_error(x)) return x;
                 if (x.kind != Value::Kind::Number && x.kind != Value::Kind::Text &&
                     x.kind != Value::Kind::Empty) {
                     continue;
@@ -498,28 +594,48 @@ private:
             return Value::num(acc / count);
         }
         if (name == "ABS" && args.size() == 1) {
+            Value err;
+            if (has_error(args[0], err)) return err;
             return Value::num(std::fabs(as_number(args[0])));
         }
         if (name == "SQRT" && args.size() == 1) {
+            Value err;
+            if (has_error(args[0], err)) return err;
             double n = as_number(args[0]);
             return n < 0 ? Value::err("#NUM!") : Value::num(std::sqrt(n));
         }
         if (name == "ROUND" && args.size() >= 1) {
+            Value err;
+            if (has_error(args[0], err)) return err;
             double places = args.size() > 1 ? as_number(args[1]) : 0.0;
             double factor = std::pow(10.0, places);
             return Value::num(std::round(as_number(args[0]) * factor) / factor);
         }
         if (name == "POW" && args.size() == 2) {
+            Value err;
+            if (has_error(args[0], err) || has_error(args[1], err)) return err;
             return Value::num(std::pow(as_number(args[0]), as_number(args[1])));
         }
         if (name == "IF" && args.size() >= 2) {
+            Value err;
+            if (has_error(args[0], err)) return err;
             bool cond = as_number(args[0]) != 0.0;
-            return cond ? args[1] : (args.size() > 2 ? args[2] : Value::str(""));
+            Value result = cond ? args[1] : (args.size() > 2 ? args[2] : Value::str(""));
+            return resolve_ref(result, sheet, state);
         }
         if (name == "LEN" && args.size() == 1) {
-            return Value::num(static_cast<double>(as_text(args[0]).size()));
+            Value err;
+            if (has_error(args[0], err)) return err;
+            const std::string text = as_text(args[0]);
+            size_t chars = 0;
+            for (unsigned char c : text) {
+                if ((c & 0xC0) != 0x80) ++chars;
+            }
+            return Value::num(static_cast<double>(chars));
         }
         if (name == "UPPER" && args.size() == 1) {
+            Value err;
+            if (has_error(args[0], err)) return err;
             std::string s = as_text(args[0]);
             std::transform(s.begin(), s.end(), s.begin(),
                            [](unsigned char c) { return std::toupper(c); });
@@ -531,6 +647,15 @@ private:
 
 Value eval_cell(Sheet &sheet, int row, int col,
                 std::vector<unsigned char> &state) {
+    static thread_local int depth = 0;
+    if (depth > 128) {
+        return Value::err("#DEPTH!");
+    }
+    ++depth;
+    struct DepthGuard {
+        int &value;
+        ~DepthGuard() { --value; }
+    } guard{depth};
     if (!sheet.valid(row, col)) {
         return Value::err("#REF!");
     }
@@ -617,38 +742,34 @@ int rx_sheet_cols(const RxSheet *sheet) {
 
 void rx_sheet_resize(RxSheet *sheet, int rows, int cols) {
     if (!sheet) return;
-    Sheet *s = as_sheet(sheet);
-    rows = std::max(1, rows);
-    cols = std::max(1, cols);
-    if (rows == s->rows && cols == s->cols) return;
-    const int old_rows = s->rows;
-    const int old_cols = s->cols;
-    std::vector<std::string> old = s->cells;
-    s->rows = rows;
-    s->cols = cols;
-    s->reset();
-    const int copy_rows = std::min(old_rows, rows);
-    const int copy_cols = std::min(old_cols, cols);
-    for (int r = 0; r < copy_rows; ++r) {
-        for (int c = 0; c < copy_cols; ++c) {
-            s->cells[r * cols + c] = old[r * old_cols + c];
-        }
+    try {
+        Sheet *s = as_sheet(sheet);
+        rows = std::max(1, rows);
+        cols = std::max(1, cols);
+        if (rows == s->rows && cols == s->cols) return;
+        s->resized(rows, cols);
+    } catch (...) {
+        // Keep the previous dimensions and contents on allocation failure.
     }
-    s->invalidate();
 }
 
 void rx_sheet_clear(RxSheet *sheet) {
     if (!sheet) return;
-    Sheet *s = as_sheet(sheet);
-    s->reset();
+    try {
+        as_sheet(sheet)->reset();
+    } catch (...) {
+    }
 }
 
 void rx_sheet_set(RxSheet *sheet, int row, int col, const char *text) {
     if (!sheet) return;
-    Sheet *s = as_sheet(sheet);
-    if (!s->valid(row, col)) return;
-    s->cells[s->index(row, col)] = text ? text : "";
-    s->invalidate();
+    try {
+        Sheet *s = as_sheet(sheet);
+        if (!s->valid(row, col)) return;
+        s->cells[s->index(row, col)] = text ? text : "";
+        s->invalidate();
+    } catch (...) {
+    }
 }
 
 const char *rx_sheet_raw(const RxSheet *sheet, int row, int col) {
@@ -660,26 +781,35 @@ const char *rx_sheet_raw(const RxSheet *sheet, int row, int col) {
 
 const char *rx_sheet_display(RxSheet *sheet, int row, int col) {
     if (!sheet) return "";
-    Sheet *s = as_sheet(sheet);
-    if (!s->valid(row, col)) return "";
-    const int idx = s->index(row, col);
-    if (!s->display_valid[idx]) {
-        std::vector<unsigned char> state(s->cells.size(), 0);
-        Value v = eval_cell(*s, row, col, state);
-        s->display[idx] = value_to_text(v);
-        s->display_valid[idx] = 1;
+    try {
+        Sheet *s = as_sheet(sheet);
+        if (!s->valid(row, col)) return "";
+        const int idx = s->index(row, col);
+        if (!s->display_valid[idx]) {
+            std::vector<unsigned char> state(s->cells.size(), 0);
+            Value v = eval_cell(*s, row, col, state);
+            std::string text = value_to_text(v);
+            s->display[idx].swap(text);
+            s->display_valid[idx] = 1;
+        }
+        return s->display[idx].c_str();
+    } catch (...) {
+        return "";
     }
-    return s->display[idx].c_str();
 }
 
 double rx_sheet_number(RxSheet *sheet, int row, int col) {
     if (!sheet) return 0.0;
-    Sheet *s = as_sheet(sheet);
-    if (!s->valid(row, col)) return 0.0;
-    std::vector<unsigned char> state(s->cells.size(), 0);
-    Value v = eval_cell(*s, row, col, state);
-    Value x = resolve_ref(v, *s, state);
-    return x.kind == Value::Kind::Number ? x.number : 0.0;
+    try {
+        Sheet *s = as_sheet(sheet);
+        if (!s->valid(row, col)) return 0.0;
+        std::vector<unsigned char> state(s->cells.size(), 0);
+        Value v = eval_cell(*s, row, col, state);
+        Value x = resolve_ref(v, *s, state);
+        return x.kind == Value::Kind::Number ? x.number : 0.0;
+    } catch (...) {
+        return 0.0;
+    }
 }
 
 int rx_sheet_is_formula(const RxSheet *sheet, int row, int col) {
@@ -688,46 +818,49 @@ int rx_sheet_is_formula(const RxSheet *sheet, int row, int col) {
 }
 
 size_t rx_cell_name(int row, int col, char *buf, size_t buf_len) {
-    if (!buf || buf_len == 0 || row < 0 || col < 0) return 0;
+    if (!buf || buf_len == 0 || row < 0 || col < 0 || row == INT_MAX || col == INT_MAX) {
+        return 0;
+    }
     char letters[16];
     size_t len = 0;
-    int n = col + 1;
+    long long n = static_cast<long long>(col) + 1;
     while (n > 0 && len < sizeof(letters)) {
-        int rem = (n - 1) % 26;
+        int rem = static_cast<int>((n - 1) % 26);
         letters[len++] = static_cast<char>('A' + rem);
         n = (n - 1) / 26;
     }
     std::reverse(letters, letters + len);
-    char digits[16];
-    int dn = std::snprintf(digits, sizeof(digits), "%d", row + 1);
+    char digits[32];
+    int dn = std::snprintf(digits, sizeof(digits), "%lld", static_cast<long long>(row) + 1);
     if (dn < 0) dn = 0;
-    size_t needed = static_cast<size_t>(dn);
-    if (needed > buf_len - 1) needed = buf_len - 1;
+
     size_t total = 0;
-    for (size_t i = 0; i < len && total < buf_len - 1; ++i) buf[total++] = letters[i];
-    for (int i = 0; i < dn && total < buf_len - 1; ++i) buf[total++] = digits[i];
+    for (size_t i = 0; i < len && total + 1 < buf_len; ++i) buf[total++] = letters[i];
+    for (int i = 0; i < dn && total + 1 < buf_len; ++i) buf[total++] = digits[i];
     buf[total] = '\0';
     return total;
 }
 
 int rx_cell_parse(const char *name, int *row, int *col) {
     if (!name) return 0;
-    int c = 0;
+    long long c = 0;
     size_t i = 0;
     while (name[i] && std::isalpha(static_cast<unsigned char>(name[i]))) {
         c = c * 26 + (std::toupper(static_cast<unsigned char>(name[i])) - 'A' + 1);
+        if (c > INT_MAX) return 0;
         ++i;
     }
     if (i == 0 || !std::isdigit(static_cast<unsigned char>(name[i]))) return 0;
-    int r = 0;
+    long long r = 0;
     while (name[i]) {
         if (!std::isdigit(static_cast<unsigned char>(name[i]))) return 0;
         r = r * 10 + (name[i] - '0');
+        if (r > INT_MAX) return 0;
         ++i;
     }
     if (r < 1 || c < 1) return 0;
-    if (row) *row = r - 1;
-    if (col) *col = c - 1;
+    if (row) *row = static_cast<int>(r) - 1;
+    if (col) *col = static_cast<int>(c) - 1;
     return 1;
 }
 
